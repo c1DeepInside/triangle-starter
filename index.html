@@ -8,7 +8,11 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    #status { margin: 1rem 0 .5rem; padding: .5rem .75rem; border-radius: .25rem; }
+    #status:empty { display: none; }
+    #status[data-kind="ready"] { background: #e8f5e9; }
+    #status[data-kind="manual"] { background: #fff3e0; }
+    #status[data-kind="error"] { background: #ffebee; }
   </style>
 </head>
 <body>
@@ -18,18 +22,75 @@
     <textarea id="message" rows="4"></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <section aria-live="polite">
+    <p id="status"></p>
+    <div id="ready" hidden>
+      <p>Тема: <strong id="topic"></strong></p>
+      <label for="draft">Черновик ответа (можно править перед отправкой)</label>
+      <textarea id="draft" rows="4"></textarea>
+    </div>
+  </section>
   <script type="module">
+    const TOPIC_LABELS = { delivery: "Доставка", pricing: "Цена и стоимость", other: "Другое" };
+    const MANUAL_TEXT = "Автоматический разбор не удался. Разберите заявку вручную: тему и ответ определите сами.";
+
     const form = document.querySelector("form");
-    const result = document.querySelector("#result");
+    const message = document.querySelector("#message");
+    const button = form.querySelector("button");
+    const status = document.querySelector("#status");
+    const ready = document.querySelector("#ready");
+    const topic = document.querySelector("#topic");
+    const draft = document.querySelector("#draft");
+
+    function setStatus(kind, text) {
+      status.dataset.kind = kind;
+      status.textContent = text;
+    }
+
+    function clearResult() {
+      ready.hidden = true;
+      topic.textContent = "";
+      draft.value = "";
+      setStatus("", "");
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      clearResult();
+      const text = message.value;
+      if (text.trim() === "") {
+        setStatus("error", "Введите текст заявки.");
+        message.focus();
+        return;
+      }
+
+      button.disabled = true;
+      setStatus("", "Разбираем заявку…");
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: AbortSignal.timeout(5000),
+        });
+        const data = await reply.json();
+        const usable = reply.ok && data.status === "ready" && Object.hasOwn(TOPIC_LABELS, data.topic)
+          && typeof data.draft === "string" && data.draft.trim() !== "";
+        if (usable) {
+          topic.textContent = TOPIC_LABELS[data.topic];
+          draft.value = data.draft;
+          ready.hidden = false;
+          setStatus("ready", "Готово. Проверьте черновик перед отправкой клиенту.");
+        } else if (data.status === "invalid_input") {
+          setStatus("error", "Введите текст заявки.");
+        } else {
+          setStatus("manual", MANUAL_TEXT);
+        }
+      } catch {
+        setStatus("manual", MANUAL_TEXT);
+      } finally {
+        button.disabled = false;
+      }
     });
   </script>
 </body>
